@@ -1,6 +1,7 @@
 """
 generate_cores_trdg.py
-Генерация изображений керна 360x360 с синтетическими рукописными надписями
+Генерация изображений керна 250x130 с синтетическими рукописными надписями
+и формированием датасета для обучения EasyOCR
 """
 
 import os
@@ -12,22 +13,23 @@ from trdg.generators import GeneratorFromStrings
 from PIL import Image, ImageFilter, ImageEnhance
 import numpy as np
 from tqdm import tqdm
+import csv
 
 
 # -----------------------
 # Маски кодов
 # -----------------------
 MASK_PATTERNS = [
-    "####_##.#п @@@",    # 1. Шаблон с разделителями и постфиксом
-    "###-###-###",       # 2. Формат типа XXX-XXX-XXX
-    "@@###.#####",       # 3. Буквенный префикс с цифрами
-    "##_##_##_##",       # 4. Блочный формат с подчеркиваниями
-    "###.п@###",         # 5. Специальный символ 'п' в середине
-    "####-##-####",      # 6. Формат типа XXXX-XX-XXXX
-    "@@###@@@",          # 7. Буквенные секции с цифрами
-    "##_@_##_@",         # 8. Чередование цифр и букв
-    "###-###.п",         # 9. Дефисы и специальный символ
-    "####@@@@##",        # 10. Комбинация цифр и букв 
+    "####_##.#п @@@",
+    "###-###-###",
+    "@@###.#####",
+    "##_##_##_##",
+    "###.п@###",
+    "####-##-####",
+    "@@###@@@",
+    "##_@_##_@",
+    "###-###.п",
+    "####@@@@##",
 ]
 
 LETTERS = "АБВГДЕЖЗИКЛМНОПРСТУФХЦЧШЩЭЮЯ"
@@ -73,8 +75,7 @@ def paste_text_on_background(bg_pil, text_rgba):
     W, H = bg.size
     tx, ty = text_rgba.size
 
-    # масштаб
-    scale = random.uniform(0.85, 0.99)
+    scale = random.uniform(0.7, 0.99)
     target_w = int(W * scale)
     sf = target_w / tx
     target_h = int(ty * sf)
@@ -110,7 +111,11 @@ def final_augment(img_pil):
 # Main
 # -----------------------
 def main(args):
-    os.makedirs(args.output_dir, exist_ok=True)
+    # создаём папки train и val
+    train_dir = os.path.join(args.output_root, "ru_train_filtered")
+    val_dir = os.path.join(args.output_root, "ru_val")
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(val_dir, exist_ok=True)
 
     fonts = sorted(glob(os.path.join(args.fonts_dir, "*.ttf")))
     if not fonts:
@@ -121,6 +126,15 @@ def main(args):
         bg_paths.extend(glob(os.path.join(args.backgrounds_dir, ext)))
     if not bg_paths:
         raise FileNotFoundError("Не найдено фонов в папке background/")
+
+    # открываем CSV файлы
+    train_csv = open(os.path.join(train_dir, "labels.csv"), "w", newline="", encoding="utf-8-sig")
+    val_csv = open(os.path.join(val_dir, "labels.csv"), "w", newline="", encoding="utf-8-sig")
+
+    train_writer = csv.writer(train_csv)
+    val_writer = csv.writer(val_csv)
+    train_writer.writerow(["filename", "words"])
+    val_writer.writerow(["filename", "words"])
 
     for i in tqdm(range(args.count)):
         label = generate_code_from_mask(random.choice(MASK_PATTERNS))
@@ -146,32 +160,51 @@ def main(args):
         bg_path = random.choice(bg_paths)
         bg = Image.open(bg_path).convert("RGBA")
 
-        # создаём рабочее изображение (например 960x960)
-        big_size = args.work_size
-        bg = bg.resize((big_size, big_size), resample=Image.LANCZOS)
+        # случайный поворот 0–180°
+        angle = random.uniform(0, 180)
+        bg = bg.rotate(angle, expand=True, resample=Image.BICUBIC)
+
+        # вырезаем центральный кусок 250x130
+        crop_w, crop_h = 250, 130
+        W, H = bg.size
+        left = max(0, W // 2 - crop_w // 2)
+        top = max(0, H // 2 - crop_h // 2)
+        right = left + crop_w
+        bottom = top + crop_h
+        bg = bg.crop((left, top, right, bottom))
 
         composite = paste_text_on_background(bg, text_rgba)
         out = final_augment(composite)
+        # преобразуем в RGB перед сохранением как JPEG
+        out = out.convert("RGB")
 
-        # финальное сжатие до 360x360
-        out = out.resize((args.output_size, args.output_size), resample=Image.LANCZOS)
+        # выбор train/val
+        if random.random() < args.val_split:
+            out_dir = val_dir
+            writer = val_writer
+        else:
+            out_dir = train_dir
+            writer = train_writer
 
-        fname = f"{i:06d}__{label}.png"
-        out.save(os.path.join(args.output_dir, fname))
+        fname = f"{i:06d}__{label}.jpg"
+        fpath = os.path.join(out_dir, fname)
+        out.save(fpath, quality=95)
 
-    print("Готово. Сохранено в", args.output_dir)
+        # пишем в CSV
+        writer.writerow([fpath, label])
+
+    train_csv.close()
+    val_csv.close()
+    print("Готово. Датасет сохранён в", args.output_root)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--count", type=int, default=20)
+    parser.add_argument("--count", type=int, default=20, help="Общее число изображений")
     parser.add_argument("--fonts_dir", type=str, default="fonts")
     parser.add_argument("--backgrounds_dir", type=str, default="background")
-    parser.add_argument("--output_dir", type=str, default="out")
-    parser.add_argument("--output_size", type=int, default=360,
-                        help="Итоговый размер изображения")
-    parser.add_argument("--work_size", type=int, default=640,
-                        help="Рабочий размер для генерации перед ужатием")
-    parser.add_argument("--text_size", type=int, default=64)
+    parser.add_argument("--output_root", type=str, default="all_data")
+    parser.add_argument("--text_size", type=int, default=64, help="Размер текста TRDG")
+    parser.add_argument("--val_split", type=float, default=0.1, help="Доля выборки для валидации")
     args = parser.parse_args()
     main(args)
