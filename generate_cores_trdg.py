@@ -128,8 +128,8 @@ def main(args):
         raise FileNotFoundError("Не найдено фонов в папке background/")
 
     # открываем CSV файлы
-    train_csv = open(os.path.join(train_dir, "labels.csv"), "w", newline="", encoding="utf-8-sig")
-    val_csv = open(os.path.join(val_dir, "labels.csv"), "w", newline="", encoding="utf-8-sig")
+    train_csv = open(os.path.join(train_dir, "labels.csv"), "w", newline="", encoding="utf-8")
+    val_csv = open(os.path.join(val_dir, "labels.csv"), "w", newline="", encoding="utf-8")
 
     train_writer = csv.writer(train_csv)
     val_writer = csv.writer(val_csv)
@@ -191,7 +191,7 @@ def main(args):
         out.save(fpath, quality=95)
 
         # пишем в CSV
-        writer.writerow([fpath, label])
+        writer.writerow([fname, label])
 
     train_csv.close()
     val_csv.close()
